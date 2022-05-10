@@ -8,7 +8,18 @@
 
 ;; Compatibility layer.
 
-;; Tested with Gambit v4.7.5 and above, Guile 3.0.7 and Chicken 5.2.0.
+;; Tested with Gambit v4.7.5 and above, Guile 3.0.7, Chicken 5.2.0 and Kawa 3.1
+
+(cond-expand
+
+ ((and chicken compiling)
+
+  (declare
+   (block)
+   (fixnum-arithmetic)
+   (usual-integrations)))
+
+ (else))
 
 (cond-expand
 
@@ -38,6 +49,14 @@
    (define (del-file path)
      (delete-file path)))
 
+  (kawa
+
+   (define (shell-cmd command)
+     (system command))
+
+   (define (del-file path)
+     (delete-file path)))
+
   (else
 
    (define (shell-cmd command)
@@ -50,7 +69,8 @@
 
   ((or gambit
        guile
-       chicken)
+       chicken
+       kawa)
 
    (define (pipe-through program output)
      (let ((tmpin  "rsc.tmpin")
@@ -95,7 +115,7 @@
    (import (chicken process-context))
 
    (define (cmd-line)
-     (command-line-arguments)))
+     (cons (program-name) (command-line-arguments))))
 
   (else
 
@@ -130,6 +150,14 @@
    (define (with-output-to-str thunk)
      (with-output-to-string thunk)))
 
+  (kawa
+
+   (define (with-output-to-str thunk)
+     (call-with-output-string
+      (lambda (port)
+        (parameterize ((current-output-port port))
+                      (thunk))))))
+
   (else
 
    (define (with-output-to-str thunk)
@@ -137,18 +165,32 @@
 
 (cond-expand
 
-  (gambit
+ (gambit (begin))
 
-   (define (symbol->str symbol)
-     (symbol->string symbol))
+ (kawa
 
-   (define (str->uninterned-symbol string)
-     (string->uninterned-symbol string)))
+  (import (rnrs hashtables))
 
-  (else
+  (define (make-table)
+    (make-hashtable symbol-hash symbol=?))
 
-   (define (make-table)
-     (cons '() '()))
+  (define (table-ref table key default)
+    (hashtable-ref table key default))
+
+  (define (table-set! table key value)
+    (hashtable-set! table key value))
+
+  (define (table-length table)
+    (hashtable-size table))
+
+  (define (table->list table)
+    (let-values (((keys entries) (hashtable-entries table)))
+      (vector->list (vector-map cons keys entries)))))
+
+ (else
+
+     (define (make-table)
+       (cons '() '()))
 
    (define (table-ref table key default)
      (let ((x (assoc key (car table))))
@@ -167,7 +209,27 @@
      (length (car table)))
 
    (define (table->list table)
-     (car table))
+     (car table))))
+
+(cond-expand
+
+  ((or gambit chicken)
+
+   (define (symbol->str symbol)
+     (symbol->string symbol))
+
+   (define (str->uninterned-symbol string)
+     (string->uninterned-symbol string)))
+
+  (kawa
+
+   (define (symbol->str symbol)
+     (symbol->string symbol))
+
+   (define (str->uninterned-symbol string)
+     (symbol string #f)))
+
+  (else
 
    (define uninterned-symbols (make-table))
 
@@ -182,9 +244,51 @@
        sym))
 
    (define (symbol->str symbol)
-     (table-ref uninterned-symbols symbol (symbol->string symbol)))
+     (table-ref uninterned-symbols symbol (symbol->string symbol)))))
 
-   (define (path-extension path)
+(cond-expand
+
+ (gambit
+
+  (define (rsc-path-extension path)
+    (path-extension path))
+
+  (define (rsc-path-directory path)
+    (path-directory path)))
+
+ (chicken
+
+  (import (chicken pathname))
+
+  (define (rsc-path-extension path)
+    (let ((ext (pathname-extension path)))
+      (if ext (string-append "." ext) "")))
+
+  (define (rsc-path-directory path)
+    (let ((dir (pathname-directory path)))
+      (if dir dir "")))
+
+  (define (path-expand path dir)
+    (make-pathname dir path)))
+
+ (kawa
+
+  (define (rsc-path-extension path)
+    (let ((ext (path-extension path)))
+      (if ext (string-append "." ext) "")))
+
+  (define (rsc-path-directory path)
+    (path-directory path))
+
+  (define (path-expand path::string dir::string)
+    (if (= (string-length dir) 0)
+        path
+        (let ((p (java.nio.file.Path:of dir path)))
+          (p:toString)))))
+
+ (else
+
+   (define (rsc-path-extension path)
      (let loop ((i (- (string-length path) 1)))
        (if (< i 0)
            ""
@@ -192,7 +296,7 @@
                (substring path i (string-length path))
                (loop (- i 1))))))
 
-   (define (path-directory path)
+   (define (rsc-path-directory path)
      (let loop ((i (- (string-length path) 1)))
        (if (< i 0)
            "./"
@@ -205,7 +309,13 @@
          path
          (if (= (char->integer (string-ref dir (- (string-length dir) 1))) 47) ;; #\/
              (string-append dir path)
-             (string-append dir (string-append "/" path)))))
+             (string-append dir (string-append "/" path)))))))
+
+(cond-expand
+
+ (gambit (begin))
+
+ (else
 
    (define (read-line port sep)
      (let loop ((rev-chars '()))
@@ -221,6 +331,16 @@
 (cond-expand
 
   ((and gambit (or enable-bignum disable-bignum))) ;; recent Gambit?
+
+  (chicken
+
+   (import (chicken sort))
+
+   (define (list-sort! compare list)
+     (sort! list compare))
+
+   (define (list-sort compare list)
+     (sort list compare)))
 
   (else
 
@@ -276,8 +396,21 @@
            (sort list len))))
 
    (define (list-sort compare list)
-     (list-sort! compare (append list '())))
+     (list-sort! compare (append list '())))))
 
+(cond-expand
+
+ (gambit (begin))
+
+ (chicken
+
+  (define (script-file)
+    (program-name))
+
+  (define (executable-path)
+    (executable-pathname)))
+
+ (else
    (define (script-file)
      (car (cmd-line)))
 
@@ -288,6 +421,18 @@
 
   ((and gambit ;; hack to detect recent Gambit version
         (or enable-sharp-dot disable-sharp-dot)))
+
+  (chicken
+
+   (import (chicken string))
+
+   (define (string-concatenate string-list separator)
+     (string-intersperse string-list separator)))
+
+  (kawa
+
+   (define (string-concatenate string-list separator)
+     (string-join string-list separator)))
 
   (else
 
@@ -304,19 +449,6 @@
                                        result)))
                  (list->string result))))
          ""))))
-
-(cond-expand
-
-  (ribbit
-
-   (define (error msg info)
-     (display msg)
-     (newline)
-     (write info)
-     (newline)
-     '(let loop () (loop)))) ;; freeze
-
-  (else))
 
 ;;;----------------------------------------------------------------------------
 
@@ -1483,7 +1615,7 @@
 ;; Source code reading.
 
 (define (root-dir)
-  (path-directory (or (script-file) (executable-path))))
+  (rsc-path-directory (or (script-file) (executable-path))))
 
 (define (read-all)
   (let ((x (read)))
@@ -1496,7 +1628,7 @@
 
 (define (read-library lib-path)
   (read-from-file
-   (if (equal? (path-extension lib-path) "")
+   (if (equal? (rsc-path-extension lib-path) "")
        (path-expand (string-append lib-path ".scm")
                     (path-expand "lib" (root-dir)))
        lib-path)))
